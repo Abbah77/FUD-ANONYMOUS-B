@@ -476,11 +476,11 @@ async def get_chats(current_user: dict = Depends(get_current_user)):
         if not chat_ids:
             return ChatsResponse(chats=[])
         
-        # Get chat details - FIXED: desc=True → ascending=False
+        # ✅ FIXED: For descending order, use second parameter "desc"
         chats_result = supabase.table("chats")\
             .select("*")\
             .in_("id", chat_ids)\
-            .order("last_message_time", ascending=False)\
+            .order("last_message_time", "desc")\  # Note: "desc" as string, not keyword
             .execute()
         
         chats = []
@@ -493,12 +493,14 @@ async def get_chats(current_user: dict = Depends(get_current_user)):
             
             participants = []
             for p in participants_result.data or []:
-                user = await get_user_safe(p["user_id"])
-                participants.append(ChatParticipant(
-                    id=user["id"],
-                    reg_no=user.get("reg_no", "Unknown"),
-                    full_name=user.get("full_name", "Unknown")
-                ))
+                user_result = supabase.table("users").select("id, reg_no, full_name").eq("id", p["user_id"]).execute()
+                if user_result.data and len(user_result.data) > 0:
+                    user = user_result.data[0]
+                    participants.append(ChatParticipant(
+                        id=user["id"],
+                        reg_no=user.get("reg_no", "Unknown"),
+                        full_name=user.get("full_name", "Unknown")
+                    ))
             
             chats.append(ChatResponse(
                 id=chat["id"],
@@ -514,6 +516,8 @@ async def get_chats(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         print(f"Error in get_chats: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch chats: {str(e)}")
+
+
 @app.get("/api/chats/{chat_id}/messages", response_model=MessagesResponse)
 async def get_messages(
     chat_id: str,
