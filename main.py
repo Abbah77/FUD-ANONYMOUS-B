@@ -394,78 +394,151 @@ async def create_comment(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ========== CHAT HELPER FUNCTIONS ==========
+async def get_user_safe(user_id: str) -> dict:
+    """Safely fetch user data with fallback"""
+    try:
+        if not user_id:
+            return {"id": "", "reg_no": "Unknown", "full_name": "Unknown"}
+        
+        result = supabase.table("users").select("id, reg_no, full_name").eq("id", user_id).execute()
+        if result.data and len(result.data) > 0:
+            return result.data[0]
+    except Exception as e:
+        print(f"Error fetching user {user_id}: {e}")
+    
+    return {"id": user_id, "reg_no": "Unknown", "full_name": "Unknown"}
+
+async def get_sender_reg_no(sender_id: str) -> str:
+    """Safely get sender's registration number"""
+    user = await get_user_safe(sender_id)
+    return user.get("reg_no", "Anonymous")
+
+async def ensure_private_chat_exists(chat_id: str, user_ids: list):
+    """Ensure private chat exists and participants are added"""
+    # Check if chat exists
+    chat_result = supabase.table("chats").select("*").eq("id", chat_id).execute()
+    
+    if not chat_result.data:
+        # Create new private chat
+        chat_record = {
+            "id": chat_id,
+            "type": "private",
+            "created_at": datetime.utcnow().isoformat()
+        }
+        supabase.table("chats").insert(chat_record).execute()
+        
+        # Add participants
+        for uid in user_ids:
+            participant_record = {
+                "chat_id": chat_id,
+                "user_id": uid,
+                "joined_at": datetime.utcnow().isoformat()
+            }
+            supabase.table("chat_participants").insert(participant_record).execute()
+    
+    return chat_id
+
 # ========== CHATS ENDPOINTS ==========
 @app.get("/api/chats", response_model=ChatsResponse)
 async def get_chats(current_user: dict = Depends(get_current_user)):
+    """
+    Get all chats where the current user is a participant
+    """
     try:
         # Get all chats where user is participant
-        participant_chats = supabase.table("chat_participants").select("chat_id").eq("user_id", current_user["id"]).execute()
+        participant_chats = supabase.table("chat_participants")\
+            .select("chat_id")\
+            .eq("user_id", current_user["id"])\
+            .execute()
+        
         chat_ids = [p["chat_id"] for p in participant_chats.data]
         
         if not chat_ids:
             return ChatsResponse(chats=[])
         
         # Get chat details
-        chats_result = supabase.table("chats").select("*").in_("id", chat_ids).order("last_message_time", desc=True).execute()
+        chats_result = supabase.table("chats")\
+            .select("*")\
+            .in_("id", chat_ids)\
+            .order("last_message_time", desc=True)\
+            .execute()
         
         chats = []
         for chat in chats_result.data:
-            # Get participants
-            participants_result = supabase.table("chat_participants").select("user_id").eq("chat_id", chat["id"]).execute()
+            # Get participants for this chat
+            participants_result = supabase.table("chat_participants")\
+                .select("user_id")\
+                .eq("chat_id", chat["id"])\
+                .execute()
             
             participants = []
             for p in participants_result.data:
-                user_result = supabase.table("users").select("id, reg_no, full_name").eq("id", p["user_id"]).execute()
-                if user_result.data:
-                    user = user_result.data[0]
-                    participants.append(ChatParticipant(
-                        id=user["id"],
-                        reg_no=user["reg_no"],
-                        full_name=user["full_name"]
-                    ))
+                user = await get_user_safe(p["user_id"])
+                participants.append(ChatParticipant(
+                    id=user["id"],
+                    reg_no=user.get("reg_no", "Unknown"),
+                    full_name=user.get("full_name", "Unknown")
+                ))
             
             chats.append(ChatResponse(
                 id=chat["id"],
-                type=chat["type"],
+                type=chat.get("type", "private"),
                 last_message=chat.get("last_message"),
                 last_message_time=chat.get("last_message_time"),
                 participants=participants,
-                created_at=chat["created_at"]
+                created_at=chat.get("created_at", datetime.utcnow().isoformat())
             ))
         
         return ChatsResponse(chats=chats)
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error in get_chats: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch chats: {str(e)}")
 
 @app.get("/api/chats/{chat_id}/messages", response_model=MessagesResponse)
 async def get_messages(
     chat_id: str,
     current_user: dict = Depends(get_current_user)
 ):
+    """
+    Get messages for a specific chat (global or private)
+    """
     try:
-        # Check if user is participant (except for global chat)
+        # For private chats, verify user is a participant
         if chat_id != "global":
-            participant = supabase.table("chat_participants").select("*").eq("chat_id", chat_id).eq("user_id", current_user["id"]).execute()
+            participant = supabase.table("chat_participants")\
+                .select("*")\
+                .eq("chat_id", chat_id)\
+                .eq("user_id", current_user["id"])\
+                .execute()
+            
             if not participant.data:
-                raise HTTPException(status_code=403, detail="Not a participant in this chat")
+                raise HTTPException(
+                    status_code=403, 
+                    detail="You are not a participant in this chat"
+                )
         
         # Get messages
-        messages_result = supabase.table("messages").select("*").eq("chat_id", chat_id).order("created_at", asc=True).limit(50).execute()
+        messages_result = supabase.table("messages")\
+            .select("*")\
+            .eq("chat_id", chat_id)\
+            .order("created_at", asc=True)\
+            .limit(50)\
+            .execute()
         
         messages = []
-        for msg in messages_result.data:
-            # Get sender reg_no
-            user_result = supabase.table("users").select("reg_no").eq("id", msg["sender_id"]).execute()
-            sender_reg_no = user_result.data[0]["reg_no"] if user_result.data else "Unknown"
+        for msg in messages_result.data or []:
+            # Safely get sender's registration number
+            sender_reg_no = await get_sender_reg_no(msg.get("sender_id"))
             
             messages.append(MessageResponse(
-                id=msg["id"],
-                chat_id=msg["chat_id"],
-                sender_id=msg["sender_id"],
+                id=msg.get("id", ""),
+                chat_id=msg.get("chat_id", chat_id),
+                sender_id=msg.get("sender_id", ""),
                 sender_reg_no=sender_reg_no,
-                content=msg["content"],
-                created_at=msg["created_at"]
+                content=msg.get("content", ""),
+                created_at=msg.get("created_at", datetime.utcnow().isoformat())
             ))
         
         return MessagesResponse(messages=messages, chat_id=chat_id)
@@ -473,7 +546,9 @@ async def get_messages(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error in get_messages for chat {chat_id}: {str(e)}")
+        # Return empty messages instead of failing
+        return MessagesResponse(messages=[], chat_id=chat_id)
 
 @app.post("/api/chats/{chat_id}/messages", response_model=MessageResponse)
 async def send_message(
@@ -481,39 +556,25 @@ async def send_message(
     message_data: MessageCreate,
     current_user: dict = Depends(get_current_user)
 ):
+    """
+    Send a message to a chat (creates private chat if needed)
+    """
     try:
-        # Handle private chat creation
+        # Handle private chat creation if needed
         if chat_id != "global" and "_" in chat_id:
-            # Check if chat exists
-            chat_result = supabase.table("chats").select("*").eq("id", chat_id).execute()
-            
-            if not chat_result.data:
-                # Create new private chat
-                chat_record = {
-                    "id": chat_id,
-                    "type": "private",
-                    "created_at": datetime.utcnow().isoformat()
-                }
-                supabase.table("chats").insert(chat_record).execute()
-                
-                # Add participants
-                user_ids = chat_id.split("_")
-                for uid in user_ids:
-                    participant_record = {
-                        "chat_id": chat_id,
-                        "user_id": uid,
-                        "joined_at": datetime.utcnow().isoformat()
-                    }
-                    supabase.table("chat_participants").insert(participant_record).execute()
+            user_ids = chat_id.split("_")
+            await ensure_private_chat_exists(chat_id, user_ids)
         
-        # Send message
+        # Create and send message
         message_id = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+        
         message_record = {
             "id": message_id,
             "chat_id": chat_id,
             "sender_id": current_user["id"],
             "content": message_data.content,
-            "created_at": datetime.utcnow().isoformat()
+            "created_at": now
         }
         
         result = supabase.table("messages").insert(message_record).execute()
@@ -521,87 +582,124 @@ async def send_message(
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to send message")
         
-        # Update chat last message
+        # Update chat's last message
         supabase.table("chats").update({
             "last_message": message_data.content,
-            "last_message_time": datetime.utcnow().isoformat()
+            "last_message_time": now
         }).eq("id", chat_id).execute()
         
         return MessageResponse(
             id=message_id,
             chat_id=chat_id,
             sender_id=current_user["id"],
-            sender_reg_no=current_user["reg_no"],
+            sender_reg_no=current_user.get("reg_no", "Anonymous"),
             content=message_data.content,
-            created_at=result.data[0]["created_at"]
+            created_at=now
         )
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error sending message to chat {chat_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to send message: {str(e)}")
 
 # ========== USER STATS ENDPOINTS ==========
 @app.get("/api/users/stats", response_model=UserStatsResponse)
 async def get_user_stats(current_user: dict = Depends(get_current_user)):
+    """
+    Get statistics for the current user
+    """
     try:
-        # Get stats from user_stats table or calculate
-        stats_result = supabase.table("user_stats").select("*").eq("user_id", current_user["id"]).execute()
+        # Try to get from user_stats table first
+        stats_result = supabase.table("user_stats")\
+            .select("*")\
+            .eq("user_id", current_user["id"])\
+            .execute()
         
         if stats_result.data:
             stats = stats_result.data[0]
             return UserStatsResponse(
-                posts_count=stats["posts_count"],
-                comments_count=stats["comments_count"],
-                likes_received=stats["likes_received"],
-                chats_count=stats["chats_count"]
+                posts_count=stats.get("posts_count", 0),
+                comments_count=stats.get("comments_count", 0),
+                likes_received=stats.get("likes_received", 0),
+                chats_count=stats.get("chats_count", 0)
             )
         
-        # Calculate if not exists
-        posts_count = supabase.table("posts").select("*", count="exact").eq("user_id", current_user["id"]).execute().count
-        comments_count = supabase.table("comments").select("*", count="exact").eq("user_id", current_user["id"]).execute().count
+        # Calculate stats manually if not in user_stats
+        # Get posts count
+        posts_count = supabase.table("posts")\
+            .select("*", count="exact")\
+            .eq("user_id", current_user["id"])\
+            .execute().count or 0
+        
+        # Get comments count
+        comments_count = supabase.table("comments")\
+            .select("*", count="exact")\
+            .eq("user_id", current_user["id"])\
+            .execute().count or 0
         
         # Get likes received
-        posts = supabase.table("posts").select("id").eq("user_id", current_user["id"]).execute()
-        post_ids = [p["id"] for p in posts.data]
+        posts = supabase.table("posts")\
+            .select("id")\
+            .eq("user_id", current_user["id"])\
+            .execute()
+        
         likes_received = 0
-        if post_ids:
-            likes_result = supabase.table("likes").select("*", count="exact").in_("post_id", post_ids).execute()
+        if posts.data:
+            post_ids = [p["id"] for p in posts.data]
+            likes_result = supabase.table("likes")\
+                .select("*", count="exact")\
+                .in_("post_id", post_ids)\
+                .execute()
             likes_received = likes_result.count if hasattr(likes_result, 'count') else 0
         
-        chats_count = supabase.table("chat_participants").select("*", count="exact").eq("user_id", current_user["id"]).execute().count
+        # Get chats count
+        chats_count = supabase.table("chat_participants")\
+            .select("*", count="exact")\
+            .eq("user_id", current_user["id"])\
+            .execute().count or 0
         
         return UserStatsResponse(
-            posts_count=posts_count or 0,
-            comments_count=comments_count or 0,
-            likes_received=likes_received or 0,
-            chats_count=chats_count or 0
+            posts_count=posts_count,
+            comments_count=comments_count,
+            likes_received=likes_received,
+            chats_count=chats_count
         )
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error getting user stats: {str(e)}")
+        # Return zeros instead of failing
+        return UserStatsResponse(
+            posts_count=0,
+            comments_count=0,
+            likes_received=0,
+            chats_count=0
+        )
 
 # ========== HEALTH CHECK ==========
 @app.get("/api/health")
 async def health_check():
-    try:
-        # Test database connection
-        if supabase:
-            result = supabase.table("users").select("*", count="exact").limit(1).execute()
-            return {
-                "status": "healthy",
-                "database": "connected",
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        else:
-            return {
-                "status": "degraded",
-                "database": "disconnected",
-                "error": "Supabase client not initialized",
-                "timestamp": datetime.utcnow().isoformat()
-            }
-    except Exception as e:
-        return {
-            "status": "unhealthy",
-            "database": "disconnected",
-            "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
+    """
+    Health check endpoint for monitoring
+    """
+    health_status = {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "services": {
+            "api": "up",
+            "database": "unknown"
         }
+    }
+    
+    try:
+        if supabase:
+            # Test database connection
+            result = supabase.table("users").select("*", count="exact").limit(1).execute()
+            health_status["services"]["database"] = "connected"
+        else:
+            health_status["services"]["database"] = "not_initialized"
+            health_status["status"] = "degraded"
+            
+    except Exception as e:
+        health_status["services"]["database"] = f"error: {str(e)}"
+        health_status["status"] = "unhealthy"
+    
+    return health_status
