@@ -1,15 +1,13 @@
 services:
   - type: web
-    name: fud-anonymous-api
-    runtime: python
-    buildCommand: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    name: fud-anonymous-frontend
+    runtime: static
+    buildCommand: echo "No build needed"
+    staticPublishPath: .
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
     envVars:
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_KEY
-        sync: false
-      - key: JWT_SECRET
-        generateValue: true
+      - key: API_BASE_URL
+        value: https://fud-anonymous-b.onrender.com
