@@ -14,7 +14,7 @@ app = FastAPI(title="FUD Anonymous API", version="1.0.0")
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://fud-anonymous.onrender.com"],  # In production, replace with your frontend URL
+    allow_origins=["*"],  # In production, replace with your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,19 +34,33 @@ def mask_reg_no(reg_no: str) -> str:
         return reg_no
     return f"{parts[0]}/{parts[1]}/**/****"
 
+# ========== CHECK SUPABASE CONNECTION ==========
+@app.on_event("startup")
+async def startup_event():
+    """Check Supabase connection on startup"""
+    if supabase is None:
+        print("⚠️ WARNING: Supabase client not initialized. Check your environment variables.")
+    else:
+        try:
+            # Test connection
+            result = supabase.table("users").select("*", count="exact").limit(1).execute()
+            print("✅ Supabase connection successful")
+        except Exception as e:
+            print(f"❌ Supabase connection failed: {e}")
+
 # ========== ROOT ==========
 @app.get("/")
 async def root():
     return {
         "message": "FUD Anonymous API", 
         "status": "running",
+        "supabase_connected": supabase is not None,
         "version": "1.0.0",
         "endpoints": [
             "/api/auth/signup",
             "/api/auth/login",
             "/api/auth/me",
             "/api/posts",
-            "/api/posts/{post_id}",
             "/api/posts/{post_id}/like",
             "/api/posts/{post_id}/unlike",
             "/api/posts/{post_id}/comments",
@@ -564,12 +578,20 @@ async def get_user_stats(current_user: dict = Depends(get_current_user)):
 async def health_check():
     try:
         # Test database connection
-        result = supabase.table("users").select("*", count="exact").limit(1).execute()
-        return {
-            "status": "healthy",
-            "database": "connected",
-            "timestamp": datetime.utcnow().isoformat()
-        }
+        if supabase:
+            result = supabase.table("users").select("*", count="exact").limit(1).execute()
+            return {
+                "status": "healthy",
+                "database": "connected",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        else:
+            return {
+                "status": "degraded",
+                "database": "disconnected",
+                "error": "Supabase client not initialized",
+                "timestamp": datetime.utcnow().isoformat()
+            }
     except Exception as e:
         return {
             "status": "unhealthy",
