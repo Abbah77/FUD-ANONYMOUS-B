@@ -18,7 +18,7 @@ app.add_middleware(
         "http://localhost:8000",
         "http://localhost:3000", 
         "http://127.0.0.1:5500",
-        "https://fud-anonymous.onrender.com",  # Add your frontend URL  ← ✅ Python comment
+        "https://fud-anonymous.onrender.com",
         "https://fud-anonymous-b.onrender.com"
     ],
     allow_credentials=True,
@@ -39,6 +39,10 @@ def mask_reg_no(reg_no: str) -> str:
     if len(parts) < 4:
         return reg_no
     return f"{parts[0]}/{parts[1]}/**/****"
+
+def safe_get(data: dict, key: str, default=None):
+    """Safely get value from dictionary"""
+    return data.get(key, default) if data else default
 
 # ========== CHECK SUPABASE CONNECTION ==========
 @app.on_event("startup")
@@ -226,27 +230,31 @@ async def get_posts(
         for post in posts_result.data:
             # Get liked_by for this post
             likes_result = supabase.table("likes").select("user_id").eq("post_id", post["id"]).execute()
-            liked_by = [like["user_id"] for like in likes_result.data]
+            liked_by = [like["user_id"] for like in likes_result.data] if likes_result.data else []
             
-            # Get user reg_no
-            user_result = supabase.table("users").select("reg_no").eq("id", post["user_id"]).execute()
-            user_reg_no = user_result.data[0]["reg_no"] if user_result.data else "Unknown"
+            # Get user reg_no safely
+            user_reg_no = "Unknown"
+            if post.get("user_id"):
+                user_result = supabase.table("users").select("reg_no").eq("id", post["user_id"]).execute()
+                if user_result.data and len(user_result.data) > 0:
+                    user_reg_no = user_result.data[0].get("reg_no", "Unknown")
             
             posts.append(PostResponse(
                 id=post["id"],
                 user_id=post["user_id"],
                 user_reg_no=user_reg_no,
-                content=post["content"],
-                type=post["type"],
-                likes=post["likes"],
-                comments=post["comments"],
+                content=post.get("content", ""),
+                type=post.get("type", "text"),
+                likes=post.get("likes", 0),
+                comments=post.get("comments", 0),
                 liked_by=liked_by,
-                created_at=post["created_at"]
+                created_at=post.get("created_at", datetime.utcnow().isoformat())
             ))
         
         return PostsResponse(posts=posts, total=total, page=page)
         
     except Exception as e:
+        print(f"Error in get_posts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/posts", response_model=PostResponse)
@@ -273,7 +281,7 @@ async def create_post(
         return PostResponse(
             id=post_id,
             user_id=current_user["id"],
-            user_reg_no=current_user["reg_no"],
+            user_reg_no=current_user.get("reg_no", "Unknown"),
             content=post_data.content,
             type=post_data.type,
             likes=0,
@@ -283,6 +291,7 @@ async def create_post(
         )
         
     except Exception as e:
+        print(f"Error in create_post: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/posts/{post_id}/like")
@@ -311,6 +320,7 @@ async def like_post(
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error in like_post: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/posts/{post_id}/unlike")
@@ -329,6 +339,7 @@ async def unlike_post(
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error in unlike_post: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ========== COMMENTS ENDPOINTS ==========
@@ -341,23 +352,27 @@ async def get_comments(
         result = supabase.table("comments").select("*").eq("post_id", post_id).order("created_at", desc=True).limit(20).execute()
         
         comments = []
-        for comment in result.data:
-            # Get user reg_no
-            user_result = supabase.table("users").select("reg_no").eq("id", comment["user_id"]).execute()
-            user_reg_no = user_result.data[0]["reg_no"] if user_result.data else "Unknown"
+        for comment in result.data or []:
+            # Get user reg_no safely
+            user_reg_no = "Unknown"
+            if comment.get("user_id"):
+                user_result = supabase.table("users").select("reg_no").eq("id", comment["user_id"]).execute()
+                if user_result.data and len(user_result.data) > 0:
+                    user_reg_no = user_result.data[0].get("reg_no", "Unknown")
             
             comments.append(CommentResponse(
                 id=comment["id"],
                 post_id=comment["post_id"],
                 user_id=comment["user_id"],
                 user_reg_no=user_reg_no,
-                content=comment["content"],
-                created_at=comment["created_at"]
+                content=comment.get("content", ""),
+                created_at=comment.get("created_at", datetime.utcnow().isoformat())
             ))
         
         return CommentsResponse(comments=comments, total=len(comments))
         
     except Exception as e:
+        print(f"Error in get_comments: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/posts/{post_id}/comments", response_model=CommentResponse)
@@ -386,12 +401,13 @@ async def create_comment(
             id=comment_id,
             post_id=post_id,
             user_id=current_user["id"],
-            user_reg_no=current_user["reg_no"],
+            user_reg_no=current_user.get("reg_no", "Unknown"),
             content=comment_data.content,
             created_at=result.data[0]["created_at"]
         )
         
     except Exception as e:
+        print(f"Error in create_comment: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ========== CHAT HELPER FUNCTIONS ==========
@@ -416,26 +432,29 @@ async def get_sender_reg_no(sender_id: str) -> str:
 
 async def ensure_private_chat_exists(chat_id: str, user_ids: list):
     """Ensure private chat exists and participants are added"""
-    # Check if chat exists
-    chat_result = supabase.table("chats").select("*").eq("id", chat_id).execute()
-    
-    if not chat_result.data:
-        # Create new private chat
-        chat_record = {
-            "id": chat_id,
-            "type": "private",
-            "created_at": datetime.utcnow().isoformat()
-        }
-        supabase.table("chats").insert(chat_record).execute()
+    try:
+        # Check if chat exists
+        chat_result = supabase.table("chats").select("*").eq("id", chat_id).execute()
         
-        # Add participants
-        for uid in user_ids:
-            participant_record = {
-                "chat_id": chat_id,
-                "user_id": uid,
-                "joined_at": datetime.utcnow().isoformat()
+        if not chat_result.data:
+            # Create new private chat
+            chat_record = {
+                "id": chat_id,
+                "type": "private",
+                "created_at": datetime.utcnow().isoformat()
             }
-            supabase.table("chat_participants").insert(participant_record).execute()
+            supabase.table("chats").insert(chat_record).execute()
+            
+            # Add participants
+            for uid in user_ids:
+                participant_record = {
+                    "chat_id": chat_id,
+                    "user_id": uid,
+                    "joined_at": datetime.utcnow().isoformat()
+                }
+                supabase.table("chat_participants").insert(participant_record).execute()
+    except Exception as e:
+        print(f"Error ensuring private chat exists: {e}")
     
     return chat_id
 
@@ -452,20 +471,20 @@ async def get_chats(current_user: dict = Depends(get_current_user)):
             .eq("user_id", current_user["id"])\
             .execute()
         
-        chat_ids = [p["chat_id"] for p in participant_chats.data]
+        chat_ids = [p["chat_id"] for p in participant_chats.data] if participant_chats.data else []
         
         if not chat_ids:
             return ChatsResponse(chats=[])
         
-        # Get chat details
+        # Get chat details - FIXED: desc=True → ascending=False
         chats_result = supabase.table("chats")\
             .select("*")\
             .in_("id", chat_ids)\
-            .order("last_message_time", desc=True)\
+            .order("last_message_time", ascending=False)\
             .execute()
         
         chats = []
-        for chat in chats_result.data:
+        for chat in chats_result.data or []:
             # Get participants for this chat
             participants_result = supabase.table("chat_participants")\
                 .select("user_id")\
@@ -473,7 +492,7 @@ async def get_chats(current_user: dict = Depends(get_current_user)):
                 .execute()
             
             participants = []
-            for p in participants_result.data:
+            for p in participants_result.data or []:
                 user = await get_user_safe(p["user_id"])
                 participants.append(ChatParticipant(
                     id=user["id"],
@@ -519,11 +538,11 @@ async def get_messages(
                     detail="You are not a participant in this chat"
                 )
         
-        # Get messages
+        # Get messages - FIXED: asc=True → ascending=True
         messages_result = supabase.table("messages")\
             .select("*")\
             .eq("chat_id", chat_id)\
-            .order("created_at", asc=True)\
+            .order("created_at", ascending=True)\
             .limit(50)\
             .execute()
         
@@ -628,13 +647,15 @@ async def get_user_stats(current_user: dict = Depends(get_current_user)):
         posts_count = supabase.table("posts")\
             .select("*", count="exact")\
             .eq("user_id", current_user["id"])\
-            .execute().count or 0
+            .execute()
+        posts_count = posts_count.count if hasattr(posts_count, 'count') else 0
         
         # Get comments count
         comments_count = supabase.table("comments")\
             .select("*", count="exact")\
             .eq("user_id", current_user["id"])\
-            .execute().count or 0
+            .execute()
+        comments_count = comments_count.count if hasattr(comments_count, 'count') else 0
         
         # Get likes received
         posts = supabase.table("posts")\
@@ -655,7 +676,8 @@ async def get_user_stats(current_user: dict = Depends(get_current_user)):
         chats_count = supabase.table("chat_participants")\
             .select("*", count="exact")\
             .eq("user_id", current_user["id"])\
-            .execute().count or 0
+            .execute()
+        chats_count = chats_count.count if hasattr(chats_count, 'count') else 0
         
         return UserStatsResponse(
             posts_count=posts_count,
