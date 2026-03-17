@@ -18,7 +18,7 @@ app.add_middleware(
         "http://localhost:8000",
         "http://localhost:3000", 
         "http://127.0.0.1:5500",
-        "https://fud-anonymous.onrender.com",  // Add your frontend URL
+        "https://fud-anonymous.onrender.com",  # Add your frontend URL  ← ✅ Python comment
         "https://fud-anonymous-b.onrender.com"
     ],
     allow_credentials=True,
