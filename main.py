@@ -514,7 +514,6 @@ async def get_chats(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         print(f"Error in get_chats: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch chats: {str(e)}")
-
 @app.get("/api/chats/{chat_id}/messages", response_model=MessagesResponse)
 async def get_messages(
     chat_id: str,
@@ -538,18 +537,22 @@ async def get_messages(
                     detail="You are not a participant in this chat"
                 )
         
-        # Get messages - FIXED: asc=True → ascending=True
+        # ✅ FIXED: Use correct order syntax for your Supabase version
         messages_result = supabase.table("messages")\
             .select("*")\
             .eq("chat_id", chat_id)\
-            .order("created_at", ascending=True)\
+            .order("created_at")\  # Just the column name, ascending by default
             .limit(50)\
             .execute()
         
         messages = []
         for msg in messages_result.data or []:
             # Safely get sender's registration number
-            sender_reg_no = await get_sender_reg_no(msg.get("sender_id"))
+            sender_reg_no = "Unknown"
+            if msg.get("sender_id"):
+                user_result = supabase.table("users").select("reg_no").eq("id", msg["sender_id"]).execute()
+                if user_result.data and len(user_result.data) > 0:
+                    sender_reg_no = user_result.data[0].get("reg_no", "Unknown")
             
             messages.append(MessageResponse(
                 id=msg.get("id", ""),
@@ -560,14 +563,15 @@ async def get_messages(
                 created_at=msg.get("created_at", datetime.utcnow().isoformat())
             ))
         
+        print(f"✅ Returning {len(messages)} messages for chat {chat_id}")
         return MessagesResponse(messages=messages, chat_id=chat_id)
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in get_messages for chat {chat_id}: {str(e)}")
-        # Return empty messages instead of failing
+        print(f"❌ Error in get_messages: {str(e)}")
         return MessagesResponse(messages=[], chat_id=chat_id)
+
 
 @app.post("/api/chats/{chat_id}/messages", response_model=MessageResponse)
 async def send_message(
