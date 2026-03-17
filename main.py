@@ -14,7 +14,13 @@ app = FastAPI(title="FUD Anonymous API", version="1.0.0")
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with your frontend URL
+    allow_origins=[
+        "http://localhost:8000",
+        "http://localhost:3000", 
+        "http://127.0.0.1:5500",
+        "https://fud-anonymous.onrender.com",  // Add your frontend URL
+        "https://fud-anonymous-b.onrender.com"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
