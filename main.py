@@ -466,30 +466,20 @@ async def get_chats(current_user: dict = Depends(get_current_user)):
     """
     try:
         # Get all chats where user is participant
-        participant_chats = supabase.table("chat_participants")\
-            .select("chat_id")\
-            .eq("user_id", current_user["id"])\
-            .execute()
+        participant_chats = supabase.table("chat_participants").select("chat_id").eq("user_id", current_user["id"]).execute()
         
         chat_ids = [p["chat_id"] for p in participant_chats.data] if participant_chats.data else []
         
         if not chat_ids:
             return ChatsResponse(chats=[])
         
-        # ✅ FIXED: For descending order, use second parameter "desc"
-        chats_result = supabase.table("chats")\
-            .select("*")\
-            .in_("id", chat_ids)\
-            .order("last_message_time", "desc")\  # Note: "desc" as string, not keyword
-            .execute()
+        # Get chat details - FIXED: Removed backslash
+        chats_result = supabase.table("chats").select("*").in_("id", chat_ids).order("last_message_time", "desc").execute()
         
         chats = []
         for chat in chats_result.data or []:
             # Get participants for this chat
-            participants_result = supabase.table("chat_participants")\
-                .select("user_id")\
-                .eq("chat_id", chat["id"])\
-                .execute()
+            participants_result = supabase.table("chat_participants").select("user_id").eq("chat_id", chat["id"]).execute()
             
             participants = []
             for p in participants_result.data or []:
@@ -517,7 +507,6 @@ async def get_chats(current_user: dict = Depends(get_current_user)):
         print(f"Error in get_chats: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch chats: {str(e)}")
 
-
 @app.get("/api/chats/{chat_id}/messages", response_model=MessagesResponse)
 async def get_messages(
     chat_id: str,
@@ -529,11 +518,7 @@ async def get_messages(
     try:
         # For private chats, verify user is a participant
         if chat_id != "global":
-            participant = supabase.table("chat_participants")\
-                .select("*")\
-                .eq("chat_id", chat_id)\
-                .eq("user_id", current_user["id"])\
-                .execute()
+            participant = supabase.table("chat_participants").select("*").eq("chat_id", chat_id).eq("user_id", current_user["id"]).execute()
             
             if not participant.data:
                 raise HTTPException(
@@ -541,13 +526,8 @@ async def get_messages(
                     detail="You are not a participant in this chat"
                 )
         
-        # ✅ FIXED: Use correct order syntax for your Supabase version
-        messages_result = supabase.table("messages")\
-            .select("*")\
-            .eq("chat_id", chat_id)\
-            .order("created_at")\  # Just the column name, ascending by default
-            .limit(50)\
-            .execute()
+        # Get messages - FIXED: Removed backslash and incorrect comment
+        messages_result = supabase.table("messages").select("*").eq("chat_id", chat_id).order("created_at").limit(50).execute()
         
         messages = []
         for msg in messages_result.data or []:
@@ -575,7 +555,6 @@ async def get_messages(
     except Exception as e:
         print(f"❌ Error in get_messages: {str(e)}")
         return MessagesResponse(messages=[], chat_id=chat_id)
-
 
 @app.post("/api/chats/{chat_id}/messages", response_model=MessageResponse)
 async def send_message(
@@ -636,10 +615,7 @@ async def get_user_stats(current_user: dict = Depends(get_current_user)):
     """
     try:
         # Try to get from user_stats table first
-        stats_result = supabase.table("user_stats")\
-            .select("*")\
-            .eq("user_id", current_user["id"])\
-            .execute()
+        stats_result = supabase.table("user_stats").select("*").eq("user_id", current_user["id"]).execute()
         
         if stats_result.data:
             stats = stats_result.data[0]
@@ -652,39 +628,24 @@ async def get_user_stats(current_user: dict = Depends(get_current_user)):
         
         # Calculate stats manually if not in user_stats
         # Get posts count
-        posts_count = supabase.table("posts")\
-            .select("*", count="exact")\
-            .eq("user_id", current_user["id"])\
-            .execute()
+        posts_count = supabase.table("posts").select("*", count="exact").eq("user_id", current_user["id"]).execute()
         posts_count = posts_count.count if hasattr(posts_count, 'count') else 0
         
         # Get comments count
-        comments_count = supabase.table("comments")\
-            .select("*", count="exact")\
-            .eq("user_id", current_user["id"])\
-            .execute()
+        comments_count = supabase.table("comments").select("*", count="exact").eq("user_id", current_user["id"]).execute()
         comments_count = comments_count.count if hasattr(comments_count, 'count') else 0
         
         # Get likes received
-        posts = supabase.table("posts")\
-            .select("id")\
-            .eq("user_id", current_user["id"])\
-            .execute()
+        posts = supabase.table("posts").select("id").eq("user_id", current_user["id"]).execute()
         
         likes_received = 0
         if posts.data:
             post_ids = [p["id"] for p in posts.data]
-            likes_result = supabase.table("likes")\
-                .select("*", count="exact")\
-                .in_("post_id", post_ids)\
-                .execute()
+            likes_result = supabase.table("likes").select("*", count="exact").in_("post_id", post_ids).execute()
             likes_received = likes_result.count if hasattr(likes_result, 'count') else 0
         
         # Get chats count
-        chats_count = supabase.table("chat_participants")\
-            .select("*", count="exact")\
-            .eq("user_id", current_user["id"])\
-            .execute()
+        chats_count = supabase.table("chat_participants").select("*", count="exact").eq("user_id", current_user["id"]).execute()
         chats_count = chats_count.count if hasattr(chats_count, 'count') else 0
         
         return UserStatsResponse(
